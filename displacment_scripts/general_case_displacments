@@ -1,0 +1,1209 @@
+#! /usr/bin/perl -w
+
+#
+#    Copyright 2010 Andrew Walker
+#
+#    This file is part of the Dislocator package.
+#
+#    The Dislocator package is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    The Dislocator package is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with the Dislocator package.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+######################################################################
+#                                                                    #
+#  This code introduces a general dislocation into an anisotropic    #
+#    crystal by numerical solution of the sextic polynomial proposed #
+#    by Eshelby et al. (Acta Met. 1953 Vol 1 pg.251) using the       #
+#    procedure outlined in Hirth & Lothe (Theory of Dislocations 2nd #
+#    edition pp.436 - 445). The code may be full of bugs - beware!   #
+#                                                                    #
+#  Usage:                                                            #
+#   >  ./elastic elasticfile bx by bz cellinput celloutput           # 
+#                                                                    #
+#  Where:                                                            #
+#   *   elasticfile is a GULP output file orentated with the         #
+#            dislocation line along z containing the elastic         #
+#            constants matrix                                        #
+#   *   bx etc. are the x, y, and z components of the Burgers        #
+#            vector (dislocation line along z)                       #
+#   *   cellinput is a 1D GULP input file (cartesian co-ordinates)   #
+#            with the dislocation line along x!                      #
+#   *   celloutput is a 1D GULP input file that will be produced     #
+#            containg the dislocation                                #
+#                                                                    #
+#   Andrew Walker (andrew.m.walker@anu.edu.au)   (c) 2005            #
+#                                                                    #
+#      Based on earler work by Andrew Walker (c) 2003, 2004, 2005    #
+#                                                                    #
+######################################################################     
+
+
+use Math::Complex;                          # Makes all math complex
+use Math::Polynomial::Solve qw(poly_roots); # Solve polynomials
+use Math::MatrixReal;                       # Stuff for matrixes 
+                                            # and simulatnious equations
+
+
+my $debug = 0; # Flag to increse output in main code
+my $num = '[+-]?\d+\.?\d*'; # Pattern match for a FP number
+
+##
+# I have used upper case variables for Real Matrix objects!
+# But have sometimes used them for other things too (it seems 
+# that there is no "MatrixComplex" thing in CPAN so these are
+# simple arrays.
+##
+
+#
+# Read in input and echo to STDOUT
+# ================================
+#
+
+my $elast_file = $ARGV[0]; # Where the elastic constants will come from
+my @burgers; # x, y and z components of the Burgers vector (Angstroms)
+$burgers[0] = $ARGV[1]; #x
+$burgers[1] = $ARGV[2]; #y
+$burgers[2] = $ARGV[3]; #z
+my $cell_input = $ARGV[4]; # Where the undislocated 1D cell is comming from 
+my $cell_output = $ARGV[5]; # Where the dislocated cell will go
+
+print "Runing general case dislocatior code\n";
+print "====================================\n";
+print "Elastic constants will come from: $elast_file\n";
+print "Cartesian Burgers vector components are:\n";
+print "bx = $burgers[0]\n";
+print "by = $burgers[1]\n";
+print "bz = $burgers[2]\n";
+print "(z is along the dislocation line and the\n";
+print "sense vector points along -z)\n";
+print "Undislocated input model file is:\n";
+print "$cell_input\n";
+print "Dislocated model will be:\n";
+print "$cell_output\n";
+
+#
+# Read in the elastic constants matrix
+# ====================================
+#
+
+print "Geting elastic constants\n" if ($debug > 0);
+my ($C) = &get_elastic ($elast_file); # $C is a 6*6 matrix!
+print "Elastic constants matrix is:\n";
+print "$C \n";
+# Test matrix looks sensible
+unless ($C->is_symmetric()) {
+    die "The elastic constants matrix is not symmetric - something went wrong!\n";
+}
+print "element (3,3) is: " . $C->element(3,3) . "\n" 
+    if ($debug > 0); 
+
+
+#
+# Solve the elastic problem
+# =========================
+#
+
+my (@A1, @A2, @A3, @p, @D); #These are all complex vectors...
+                            #the array index applies to the 
+                            #sorted root of the 6-th order polynomial
+                            #(the roots are complex conjs so 3 are not
+                            #needed
+
+($A1[0], $A1[1], $A1[2], $A2[0], $A2[1], $A2[2],
+ $A3[0], $A3[1], $A3[2], $p[0], $p[1], $p[2],
+ $D[0], $D[1], $D[2]) 
+    = &SolveSextic($C, $burgers[0], $burgers[1], $burgers[2]);
+
+print "Thats everything we need to solve the displacments:\n";
+foreach (0 .. 2) {
+    print "For root $_ = $p[$_]\n";
+    print "A1 = $A1[$_]\n";
+    print "A2 = $A2[$_]\n";
+    print "A3 = $A3[$_]\n";
+    print "D = $D[$_]\n";
+}
+
+
+#
+# Calculate the energy factor and print it out for reference
+# ==========================================================
+#
+# (This is not strictly needed for setting up the dislocation
+# but as I have the information I may as well work it out
+# because it is usefull in interpreting the results...
+# ...maybe it should put a comment into the gulp input file?)
+#
+
+my $energy_factor;
+foreach my $i (0 .. 2) { # Sum over i
+    my $ifactor = 0;
+    foreach my $n (0 .. 2) { # sum over n 
+	my $nfactor = 0;
+	foreach my $k (0 .. 2) { # sum over k
+	    my $thisA = 0;
+	    if ($k == 0) {
+		$thisA = $A1[$n];
+	    } elsif ($k == 1) {
+		$thisA = $A2[$n];
+	    } elsif ($k == 2) {
+		$thisA = $A3[$n];
+	    } 
+	    $nfactor += &getB($C,($i+1),2,($k+1),$p[$n]) * $thisA * $D[$n];
+	}
+	$ifactor += $nfactor;
+    }
+    $energy_factor += $burgers[$i] * Im($ifactor);
+}
+
+print "\nEnergy factor (Kb**2 term in eleastic energy)\n";
+print "for this dislocation is $energy_factor (in eV.Ang**-1)\n";
+
+#
+# Calculate atomic displacements
+# ==============================
+#
+# Go through the model atom by atom and calculate the displacements
+# and print out the new co-ordinates...
+#
+
+open INPUT, "<$cell_input"
+    or die "Could not open input file $cell_input : $!";
+open OUTPUT, ">$cell_output"
+    or die "Could not open output file $cell_output : $!";
+
+my $number_of_atoms = 0; # Just to count the atoms found
+print "Displacing all atoms in model\n";
+
+while (<INPUT>) {
+    
+    if  # if statment to match atom data.
+        (/^                                     ###################
+	 #Patern to match: #
+	 
+         (\w+\s+core|\w+\s+shel|\w+\s+bshe)\s+                        #Atom name        #
+         ($num)\s+($num)\s+($num)\s+($num)\s+   #Coord and charge #
+         ($num[\s+\d\s+\d\s+\d]?)               #occup and ?flags #
+	 ###################
+         /xo)
+    {  
+	
+        my $atom_name = $1;
+        my $cart_x = $2; # NOTE will fall down for res files
+	# as they use frac cart cart...
+        my $cart_y = $3;
+        my $cart_z = $4;
+        my $atom_chrg = $5;
+        my $atom_flag = $6;
+	
+        $number_of_atoms ++;
+	#### NB - I switch axes around - is this the correct way to do this??
+        ($cart_z,$cart_y,$cart_x) = &DisplaceAtom($cart_z,$cart_y,$cart_x,
+                                                  $A1[0], $A1[1], $A1[2],
+                                                  $A2[0], $A2[1], $A2[2],
+                                                  $A3[0], $A3[1], $A3[2],
+                                                  $D[0], $D[1], $D[2],
+                                                  $p[0], $p[1], $p[2]);
+	
+        $_ =  "$atom_name $cart_x $cart_y $cart_z $atom_chrg $atom_flag";
+    }
+    
+    print OUTPUT "$_";
+}
+
+
+close INPUT;
+close OUTPUT;
+print "Finished - done $number_of_atoms atoms\n";
+
+
+
+
+sub DisplaceAtom {
+
+#
+# This subroutine takes x, y and z for an atom (dislocation line // to z)
+# and works out and applies the displacment predicted by eq. 13-91 of H&L
+#
+
+    my $debug = 4; #Debugging flag - 0 = quiet, 3 = lots and lots of info
+    my @x; # Atomic position (these are real)
+    $x[0] = $_[0];
+    $x[1] = $_[1];
+    $x[2] = $_[2];
+    #Also need some values (constants here)
+    #They are all complex numbers
+    my @A1 = ($_[3], $_[4], $_[5]);
+    my @A2 = ($_[6], $_[7], $_[8]);
+    my @A3 = ($_[9], $_[10], $_[11]);
+    my @D = ($_[12], $_[13], $_[14]);
+    my @p = ($_[15], $_[16], $_[17]);
+
+# Internal vars...
+    my $PI = 3.141592654;
+    my $E = 2.718281828;
+    my @u; #Atomic displacments (add to @x before return) 
+           #This is eventualy real but at times it is complex 
+           #we multiply it and things then take the real part at the 
+           #end - so it is complex.
+
+    
+    if ($debug > 0) {
+	print "===========================================\n";
+	print "In subroutine DisplaceAtom - arguments are:\n";
+	print "x1 = $x[0]\n";
+	print "x2 = $x[1]\n";
+	print "x3 = $x[2]\n";
+    }
+    if ($debug > 3) {
+	print "A11 = $A1[0]\n";
+	print "A12 = $A1[1]\n"; 
+	print "A13 = $A1[2]\n";
+	print "A21 = $A2[0]\n";
+	print "A22 = $A2[1]\n";
+	print "A23 = $A2[2]\n";
+	print "A31 = $A3[0]\n";
+	print "A32 = $A3[1]\n";
+	print "A33 = $A3[2]\n";
+	print "D1 = $D[0]\n";
+	print "D2 = $D[1]\n";
+	print "D3 = $D[2]\n";
+	print "p1 = $p[0]\n";
+	print "p2 = $p[1]\n";
+	print "p3 = $p[2]\n";
+    }
+    
+
+# Check for case (0,0) 
+# this is badly behaved, at present I'll 
+# just return 0,0...
+
+    if (($x[0] == 0) and ($x[1] == 0)) {
+	return ($x[0], $x[1], $x[2]);
+    }
+    
+# Check for cases of x1 or x2 == 0
+# This is not the propper way to do this ...
+# ... but it works.
+
+    foreach (0 .. 1) {
+	if ($x[$_] == 0) {
+	    print "Warning, atom has x or y coordinate = 0\n";
+	    $x[$_] += 0.0000000001;
+	}
+    } 
+    
+# Calc displcament vectors
+    foreach my $k (0 .. 2) {
+	print "Component k = $k\n" if ($debug > 1);
+	$u[$k] = 0; 
+	foreach my $n (0 .. 2) {
+	    print "Sum over n.\n" if ($debug > 1);
+	    print "  n = $n\n" if ($debug > 1);
+	    my $thisA; #temp complex var
+	    if ($k == 0) {
+		$thisA = $A1[$n];
+	    } elsif ($k == 1) {
+		$thisA = $A2[$n];
+	    } elsif ($k == 2) {
+		$thisA = $A3[$n];
+	    }
+	    print "  A = $thisA\n" if ($debug > 2);
+	    print "  x1 = $x[0]\n" if ($debug > 2);
+	    print "  x2 = $x[1]\n" if ($debug > 2);
+	    print "  D = $D[$n]\n" if ($debug > 2);
+	    print "  p = $p[$n]\n" if ($debug > 2);
+	    print "  Current u is $u[$k]\n" if ($debug > 2);
+	    $u[$k] += ($thisA * $D[$n] *  logn(($x[0]+($x[1]*$p[$n])),$E));
+# Logn comes from math::complex and logn(x,n) is log10(x)/log10(n).  
+# This is equal to logn(x) and n=E. So the above is the natural log.
+
+	    print "  u is $u[$k]\n" if ($debug > 2);
+	}
+	print "Sum of displacment field compoents in $k = $u[$k]\n" if ($debug > 0);
+	$u[$k] *= (-1/(2*$PI*i));
+	print "Mult by prefactor... Now displacment field compoents in $k = $u[$k]\n" if ($debug > 0);
+	$u[$k] = Re($u[$k]); #Throw away the complex part!
+	print "Real part in  $k = $u[$k]\n" if ($debug > 0);
+    }
+    if ($debug > 0) {
+	print "Final displacment field at: ";
+	print "@x\n";
+	print "is: ";
+	print "@u\n";
+    }
+# Apply displacments after calculating all of them!
+    foreach (0 .. 2) {
+	$x[$_] += $u[$_];
+    }
+    
+    return ($x[0], $x[1], $x[2]);
+    
+}
+
+
+sub SolveSextic {
+    
+    my ($C, $burgers_x, $burgers_y, $burgers_z) = @_; #Matrix and three real numbers
+    my $debug = 0; # Debugging info for this subroutine
+
+
+    print "============================================================================\n";
+    print "SolveSextic\n";
+    print "    -- works out a solution to the Sextic formalism of Eshelby et al. (1953)\n";
+    print "       Acta Met. Vol.1 251 using the procedure detailed in Hirth and Lothe\n";
+    print "       pages 436 - 445.\n";
+    print "                                             Andrew Walker (c) 2005.\n";
+    print "============================================================================\n";
+    
+    my @coeff = &calccoeff($C); #Pass the elastic constants 
+                                #to a seperate subroutine to 
+                                #get the 7 coefficents for the 
+                                #6-order polynomial
+    print "\nCoefficents of sextic equation are:\n";
+    foreach (0 .. 6) {
+	print "p ** $_ = $coeff[$_]\n";
+    }
+    
+    print "\nCalculating roots...\n";
+    my @p = poly_roots(@coeff); #Solve to polynomial (Returns 6 complex roots in p!)
+    if ($debug > 0) {
+	print "\nUnsorted roots of sextic equation are:\n";
+	foreach (0 .. 5) {
+	    print "p $_ = $p[$_]\n";
+	}
+    }
+
+# The roots 0, 2, 4 seem to be complex conj of 1, 3, 5 - I'll assume this is always 
+# true for now - it is tested below. Note that this is undocumented in the Math::complex
+# docs!
+# It also seems to sort them -ve imag part first then +ve
+#    - this is used below so that 0 - 3 are positive 
+# so that the +- tests in the simultanipous equations are sorted.
+# Move roots around so that we have 0 - 2 as the ones we want to work with...
+    my $pdum0 = $p[0];
+    my $pdum2 = $p[2];
+    my $pdum4 = $p[4];
+    $p[0] = $p[1];
+    $p[1] = $p[3];
+    $p[2] = $p[5];
+    $p[3] = $pdum0;
+    $p[4] = $pdum2;
+    $p[5] = $pdum4;
+# reducing the above 9 lines of code to something more efficent 
+# is left as an exercise to the reader #
+    
+    print "\nSorted roots are:\n";
+    foreach (0 .. 5) {
+	print "p $_ = $p[$_]\n";
+    }
+
+# Test that the roots have been sorted correctly 
+# ~ overloaded as the complex conjugate.
+    unless (($p[0] == ~$p[3]) &&
+	    ($p[1] == ~$p[4]) &&
+	    ($p[2] == ~$p[5])) 
+    {die "It seems that there was a problem with the root solver or its sorting of the roots!\n"}
+
+# Test that roots 0 - 3 have positive roots
+# (or give up on the whole process).
+    unless ((Im($p[0]) >= 0.0) &&
+	    (Im($p[1]) >= 0.0) &&
+	    (Im($p[1]) >= 0.0)) 
+    {die "Roots 0 - 3 have negative imaginary parts!\n"}
+
+
+# "A" and "a" matrixes... 
+# array subscrip corisponds to "n", number in name to "k"... they need to be complex
+# so they are implemented as arrays - and the index corrisponds to the root.
+    my @a11;
+    my @a12;
+    my @a13;
+    my @a21;
+    my @a22;
+    my @a23;
+    my @A1;
+    my @A2;
+    my @A3;
+
+#
+# Find A and a for each root number
+#
+    
+    foreach my $rootnumber (0 .. 5) {
+
+# First a...
+
+# Note that the det of a 2*2 matrix:
+# |a b|
+# |c d|
+# is ad - bc
+# easy as pie...
+#
+# The following 6 expressions were checked (and one mistake in a13 
+# fixed) 3 / 6/ 2005 - AW	
+
+	$a11[$rootnumber]  = 
+	    ($C->element(1,1))+
+	    ((($C->element(1,6))+($C->element(6,1)))*$p[$rootnumber])+
+	    (($C->element(6,6))*($p[$rootnumber]**2));
+	$a12[$rootnumber] = 
+	    ($C->element(1,6))+
+	    ((($C->element(1,2))+($C->element(6,6)))*$p[$rootnumber])+
+	    (($C->element(6,2))*($p[$rootnumber]**2));
+	$a13[$rootnumber] = 
+	    ($C->element(1,5))+
+	    ((($C->element(1,4))+($C->element(6,5)))*$p[$rootnumber])+
+	    (($C->element(6,4))*($p[$rootnumber]**2));
+	$a21[$rootnumber] = 
+	    ($C->element(6,1))+
+	    ((($C->element(6,6))+($C->element(2,1)))*$p[$rootnumber])+
+	    (($C->element(2,6))*($p[$rootnumber]**2));
+	$a22[$rootnumber] = 
+	    ($C->element(6,6))+
+	    ((($C->element(6,2))+($C->element(2,6)))*$p[$rootnumber])+
+	    (($C->element(2,2))*($p[$rootnumber]**2));
+	$a23[$rootnumber] = 
+	    ($C->element(6,5))+
+	    ((($C->element(6,4))+($C->element(2,5)))*$p[$rootnumber])+
+	    (($C->element(2,4))*($p[$rootnumber]**2));
+
+# Then A
+
+	$A1[$rootnumber] = (($a11[$rootnumber]*$a23[$rootnumber])
+			    -($a13[$rootnumber]*$a22[$rootnumber])); 
+	$A2[$rootnumber] = -1*(($a11[$rootnumber]*$a23[$rootnumber])
+			       -($a13[$rootnumber]*$a21[$rootnumber]));
+	$A3[$rootnumber] =  (($a11[$rootnumber]*$a22[$rootnumber])
+			     -($a12[$rootnumber]*$a21[$rootnumber]));
+	
+	print "non-normalised roots are:\n"; 
+	print "A1 = $A1[$rootnumber]\n";
+	print "A2 = $A2[$rootnumber]\n";
+	print "A3 = $A3[$rootnumber]\n";
+
+#	if (($A1[$rootnumber] == 0)) {
+#	    print "High symetry solution found - moving solutions around in order to solve simultainous eq's\n";
+#	    $A1[$rootnumber] = $A3[$rootnumber];
+#	    $A3[$rootnumber] = 0;
+#
+#	    print "New un-normalised roots are:\n"; 
+#	    print "A1 = $A1[$rootnumber]\n";
+#	    print "A2 = $A2[$rootnumber]\n";
+#	    print "A3 = $A3[$rootnumber]\n";
+#	}  
+
+
+# Normalise
+	
+	if ($A3[$rootnumber] == 0) {
+	#    if ($A2[$rootnumber] == 0) {
+	#	$A1[$rootnumber] = $A1[$rootnumber]/$A1[$rootnumber];
+	#    } else {	
+		$A1[$rootnumber] = $A1[$rootnumber]/$A2[$rootnumber];
+		$A2[$rootnumber] = $A2[$rootnumber]/$A2[$rootnumber];
+	#    }
+	} else {
+	    $A1[$rootnumber] = $A1[$rootnumber]/$A3[$rootnumber];
+	    $A2[$rootnumber] = $A2[$rootnumber]/$A3[$rootnumber];
+	    $A3[$rootnumber] = $A3[$rootnumber]/$A3[$rootnumber];
+	}
+
+# But what if some of them == 0 ...  NEED TO THINK MORE ABOUT THIS (ABOVE) STEP
+  # -> this is going to depend on what in b(k) is zero - shuffel so that no b(k) != 0
+  # has a Ak equal to zero. But what about the roots - and is this correct?
+
+
+	print "For root number $rootnumber:\n";
+	print "a11 = $a11[$rootnumber]\n";
+	print "a12 = $a12[$rootnumber]\n";
+	print "a13 = $a13[$rootnumber]\n";
+	print "a21 = $a21[$rootnumber]\n";
+	print "a22 = $a22[$rootnumber]\n";
+	print "a23 = $a23[$rootnumber]\n";
+	print "A1 = $A1[$rootnumber]\n";
+	print "A2 = $A2[$rootnumber]\n";
+	print "A3 = $A3[$rootnumber]\n";
+	
+	
+    }
+    
+# Finaly solve simultanious equations to get D...
+
+# Solve some simultanious equations .... see:
+# http://search.cpan.org/~leto/Math-MatrixReal-1.9/MatrixReal.pm 
+# For how to do this in perl...
+# But it is going to get nasty as we have complex terms.
+    
+# Ok - I have looked at the maths - now to do some coding...
+    
+    my $A = new Math::MatrixReal(6,6); #Coefficents (real)
+    my $B = new Math::MatrixReal(6,1); #Solutions   (real)
+# Equation 13.88
+# At present I assume that all imaganary parts of p are positive - not neseceraly so
+# In fact - can I sort this out in the sorting opparation above (given the properies of
+# a plynomial with real coefficets and nesseceraly complex roots)? This relies on the apparant
+# properties of my particular polynomial solver...
+    $A->assign(1,1,Re($A1[0]));
+    $A->assign(1,2,Im($A1[0]));
+    $A->assign(1,3,Re($A1[1]));
+    $A->assign(1,4,Im($A1[1]));
+    $A->assign(1,5,Re($A1[2]));
+    $A->assign(1,6,Im($A1[2]));
+    $A->assign(2,1,Re($A2[0]));
+    $A->assign(2,2,Im($A2[0]));
+    $A->assign(2,3,Re($A2[1]));
+    $A->assign(2,4,Im($A2[1]));
+    $A->assign(2,5,Re($A2[2]));
+    $A->assign(2,6,Im($A2[2]));
+    $A->assign(3,1,Re($A3[0]));
+    $A->assign(3,2,Im($A3[0]));
+    $A->assign(3,3,Re($A3[1]));
+    $A->assign(3,4,Im($A3[1]));
+    $A->assign(3,5,Re($A3[2]));
+    $A->assign(3,6,Im($A3[2]));
+    
+    $B->assign(1,1,$burgers_x);
+    $B->assign(2,1,$burgers_y);
+    $B->assign(3,1,$burgers_z);
+    
+# Equation 13.89
+    foreach my $i (1 .. 3) {
+	my @vali;
+	my @valr;
+	foreach (0 .. 2) {
+	    $valr[$_] = (Re(&getB($C,$i,2,1,$p[$_]))*Re($A1[$_]))
+		+(Re(&getB($C,$i,2,2,$p[$_]))*Re($A2[$_]))+
+		(Re(&getB($C,$i,2,3,$p[$_]))*Re($A3[$_]));
+	    $vali[$_] = (Im(&getB($C,$i,2,1,$p[$_]))*Im($A1[$_]))
+		+(Im(&getB($C,$i,2,2,$p[$_]))*Im($A2[$_]))+
+		(Im(&getB($C,$i,2,3,$p[$_]))*Im($A3[$_]));
+	}
+	$A->assign($i+3,1,$valr[0]);
+	$A->assign($i+3,2,$vali[0]);
+	$A->assign($i+3,3,$valr[1]);
+	$A->assign($i+3,4,$vali[1]);
+	$A->assign($i+3,5,$valr[2]);
+	$A->assign($i+3,6,$vali[2]);
+    }
+    $B->assign(4,1,0);
+    $B->assign(5,1,0);
+    $B->assign(6,1,0);
+    print "Going to solve:\n $A \n* D(p) \n= \n$B\n";
+    
+    ($An,$Bn) = $A->normalize($B);
+    $A_LR = $An->decompose_LR();
+    print "Which is:\n";
+    print "$An \n* D(p) \n=\n$Bn\n";
+    if (($dim,$D,$ZZ) = $A_LR->solve_LR($Bn)) {
+	print "$D\n =\n $A \n* \n$B\n";
+	print "i.e. $dim +1 solutions with base matrix \n$ZZ\n";
+    } else {
+	die "Could not solve simultanious equations to find D\n";
+    }
+    
+    # Package real and imagnary parts of D up as a complex number
+    
+    my @Ds; # complex
+    $Ds[0] = Math::Complex->make(($D->element(1,1)),($D->element(2,1)));
+    $Ds[1] = Math::Complex->make(($D->element(3,1)),($D->element(4,1)));
+    $Ds[2] = Math::Complex->make(($D->element(5,1)),($D->element(6,1)));
+    
+    print "============================================================================\n";
+    
+#
+# RETURN RELEVENT STUFF
+#
+    return ($A1[0], $A1[1], $A1[2], 
+	    $A2[0], $A2[1], $A2[2],
+	    $A3[0], $A3[1], $A3[2],
+	    $p[0], $p[1], $p[2],
+	    $Ds[0], $Ds[1], $Ds[2]);
+    
+}
+
+
+sub getB {
+
+#
+# This subroutine returns "Bijk(n)" as defined by 12-90 
+# of Hirth and Lothe (page 445). It needs the 
+# elastic constants tensor, the n'th root of the sextic 
+# equation and values of i, j and k (between 1 and 3).
+#
+# In fact the code is only set up for j==2 as j!=2 is
+# never needed. The subroutine is used by SolveSextic,
+# and in the calculation of the energy factor in the main
+# code. Because I store the 6*6 elastic constants matrix 
+# rather than the 3*3*3*3 tensor this subroutine is a little 
+# on the messey side...
+#
+
+
+    my ($C,$i,$j,$k,$p) = @_;
+    my $B; #This will be complex - because p is complex
+    if ($j == 2) {
+	if (($i == 1) and ($k == 1)) {
+# C61+C66*pn
+	    $B = (($C->element(6,1))+(($C->element(6,6))*$p));
+	    return $B;
+	} elsif (($i == 1) and ($k == 2)) {
+# C66+C62*pn
+	    $B = (($C->element(6,6))+(($C->element(6,2))*$p));
+	    return $B;
+	} elsif (($i == 1) and ($k == 3)) {
+# C65+C64*pn
+	    $B = (($C->element(6,5))+(($C->element(6,4))*$p));
+	    return $B;
+	} elsif (($i == 2) and ($k == 1)) {
+# C21+C26*pn
+	    $B = (($C->element(2,1))+(($C->element(2,6))*$p));
+	    return $B;
+	} elsif (($i == 2) and ($k == 2)) {
+# C26+C22*pn
+	    $B = (($C->element(2,6))+(($C->element(2,2))*$p));
+	    return $B;
+	} elsif (($i == 2) and ($k == 3)) {
+# C25+C24*pn
+	    $B = (($C->element(2,5))+(($C->element(2,4))*$p));
+	    return $B;
+	} elsif (($i == 3) and ($k == 1)) {
+# C41+C46*pn
+	    $B = (($C->element(4,1))+(($C->element(4,6))*$p));
+	    return $B;
+	} elsif (($i == 3) and ($k == 2)) {
+# C46+C42*pn
+	    $B = (($C->element(4,6))+(($C->element(4,2))*$p));
+	    return $B;
+	} elsif (($i == 3) and ($k == 3)) {
+# C45+C44*pn
+	    $B = (($C->element(4,5))+(($C->element(4,4))*$p));
+	    return $B;
+	} else {
+	    die "Unexpected error number 1 in getB\n";
+	}
+    } else {
+	die "Expected error number 2 in getB\n";
+    }    
+}
+
+
+sub get_elastic {
+    my $debug = 1;
+#
+# this subroutine is intended to extract the elastic *CONSTANT*
+# from a gulp output file
+#
+
+    my $filename = $_[0];
+    print "Atempting to read elastic complience matrix from $filename\n"
+	if ($debug > 0);
+    my $compl_flag = 0;
+    my @s;
+    
+    open GULPOUT, "<$filename"
+        or die "could not open $filename : $!\n";
+    
+    while (<GULPOUT>) {
+	
+# Get the Elastic Compliance Matrix
+# HACK - changed to constant matrix ... just to confuse
+        if (/Elastic Constant Matrix:/) {
+            $compl_flag = 3;
+        }
+	
+        if ((/-{79}/) and ($compl_flag > 0)) {
+            $compl_flag --;
+            next;
+        }
+	
+        if ($compl_flag == 1) {
+            my @line = split;
+            shift @line;
+            push (@s, @line); # @s is the matrix 11,12,13..16..21,22,23..65,66
+        }
+	
+    }
+    close GULPOUT;
+
+# 
+# Convert all that info to a (Math::MatrixReal) matrix
+#    
+
+    my  $s_matrix = Math::MatrixReal ->
+        new_from_string ("[ $s[0] $s[1] $s[2] $s[3] $s[4] $s[5] ]\n
+       [ $s[6] $s[7] $s[8] $s[9] $s[10] $s[11] ]\n
+    [ $s[12] $s[13] $s[14] $s[15] $s[16] $s[17] ]\n
+    [ $s[18] $s[19] $s[20] $s[21] $s[22] $s[23] ]\n
+    [ $s[24] $s[25] $s[26] $s[27] $s[28] $s[29] ]\n
+    [ $s[30] $s[31] $s[32] $s[33] $s[34] $s[35] ]\n"
+			 );
+
+    print "Full elastic matrix (GPa):\n" if ($debug > 0);
+    print "$s_matrix\n" if ($debug > 0);
+
+#
+# Convert units (only needed for the calculation of the 
+# energy factor - units cancel in displacement calc.
+#
+  
+    print "In the fantastic units of eV.Ang**-3 this is:\n" if ($debug > 0);
+    $s_matrix *= 6.24150974 * (10**-3); 
+    print "$s_matrix\n" if ($debug > 0);
+
+    return ($s_matrix);
+}
+
+sub calccoeff {
+
+#
+# This just sums up the coefficents for the
+# sextic polynomial - it's here because it
+# is so long and I have a bit of code to generate the subroutine.
+#
+# NOTE - I calculated the coefficents by hand and then typed 
+# in what I worked out. This means that the proberbility of typoes
+# and simple errors is very high (hence the need to be able to change this
+# subroutine quickly). 
+#
+# Sean - if you need this in C I can easily generate similar code from my
+# input files.
+#
+
+    my $C = $_[0];
+    my @coeff;
+    my $debug = 0;
+    print "Elastic constants matrix in calccoeff\n" if ($debug > 0);
+    print "$C \n" if ($debug > 0);
+    
+# Perl matrixes are 0 based but my working (and sane languages) are 1 based so I have subtracted
+# 1 from all the indeces that I worked out...
+# I have a small code to generate this stuff from a very terse description
+# This is lucky because now I find out that perl's "matrix real" objects are 1 based (but arrays are
+# 0 based - what a fun language)!
+
+#Some autogenerated code...
+# Constant (coeff order 0)
+    $coeff[0]=((($C->element(1,1))*($C->element(6,6))*($C->element(5,5)))
+	       -(($C->element(1,1))*($C->element(6,5))*($C->element(5,6)))
+	       -(($C->element(1,6))*($C->element(6,1))*($C->element(5,5)))
+	       +(($C->element(1,6))*($C->element(6,5))*($C->element(5,1)))
+	       +(($C->element(1,5))*($C->element(6,5))*($C->element(5,6)))
+	       -(($C->element(1,5))*($C->element(6,6))*($C->element(5,1))));
+# Coeffs of x
+    $coeff[1]=((($C->element(1,1))*($C->element(6,6))*($C->element(5,4)))
+	       +(($C->element(1,1))*($C->element(6,6))*($C->element(4,5)))
+	       +(($C->element(1,1))*($C->element(6,2))*($C->element(5,5)))
+	       +(($C->element(1,1))*($C->element(4,6))*($C->element(5,5)))
+	       +(($C->element(1,6))*($C->element(6,6))*($C->element(5,5)))
+	       +(($C->element(6,1))*($C->element(6,6))*($C->element(5,5)))
+	       -(($C->element(1,1))*($C->element(6,5))*($C->element(5,2)))
+	       -(($C->element(1,1))*($C->element(6,5))*($C->element(4,6)))
+	       -(($C->element(1,1))*($C->element(6,4))*($C->element(5,6)))
+	       -(($C->element(1,1))*($C->element(2,5))*($C->element(5,6)))
+	       -(($C->element(1,6))*($C->element(6,5))*($C->element(5,6)))
+	       -(($C->element(6,1))*($C->element(6,5))*($C->element(5,6)))
+	       -(($C->element(1,6))*($C->element(6,1))*($C->element(5,4)))
+	       -(($C->element(1,6))*($C->element(6,1))*($C->element(4,5)))
+	       -(($C->element(1,6))*($C->element(6,6))*($C->element(5,5)))
+	       -(($C->element(1,6))*($C->element(2,1))*($C->element(5,5)))
+	       -(($C->element(1,2))*($C->element(6,1))*($C->element(6,6)))
+	       -(($C->element(6,6))*($C->element(6,1))*($C->element(5,5)))
+	       +(($C->element(1,6))*($C->element(6,5))*($C->element(5,6)))
+	       +(($C->element(1,6))*($C->element(6,5))*($C->element(4,1)))
+	       +(($C->element(1,6))*($C->element(6,4))*($C->element(5,1)))
+	       +(($C->element(1,6))*($C->element(2,5))*($C->element(5,1)))
+	       +(($C->element(1,2))*($C->element(6,5))*($C->element(5,1)))
+	       +(($C->element(6,6))*($C->element(6,5))*($C->element(5,1)))
+	       +(($C->element(1,5))*($C->element(6,5))*($C->element(5,2)))
+	       +(($C->element(1,5))*($C->element(6,5))*($C->element(4,6)))
+	       +(($C->element(1,5))*($C->element(6,4))*($C->element(5,6)))
+	       +(($C->element(1,5))*($C->element(2,5))*($C->element(5,6)))
+	       +(($C->element(1,4))*($C->element(6,5))*($C->element(5,6)))
+	       +(($C->element(6,5))*($C->element(6,5))*($C->element(5,6)))
+	       -(($C->element(1,5))*($C->element(6,2))*($C->element(5,1)))
+	       -(($C->element(1,5))*($C->element(2,6))*($C->element(5,1)))
+	       -(($C->element(1,4))*($C->element(6,6))*($C->element(4,1)))
+	       -(($C->element(6,5))*($C->element(6,6))*($C->element(5,1))));
+
+# Coeefficents of x**2
+# template created on 11/5/05
+    $coeff[2] = ((($C->element(1,1))*($C->element(6,6))*($C->element(4,4)))
+		 +(($C->element(1,1))*($C->element(6,2))*($C->element(5,4)))
+		 +(($C->element(1,1))*($C->element(6,2))*($C->element(4,5)))
+		 +(($C->element(1,1))*($C->element(2,6))*($C->element(5,4)))
+		 +(($C->element(1,1))*($C->element(2,6))*($C->element(4,5)))
+		 +(($C->element(1,1))*($C->element(2,2))*($C->element(5,5)))
+		 +(($C->element(1,6))*($C->element(6,6))*($C->element(5,4)))
+		 +(($C->element(1,6))*($C->element(6,6))*($C->element(4,5)))
+		 +(($C->element(1,6))*($C->element(6,2))*($C->element(5,5)))
+		 +(($C->element(6,1))*($C->element(6,2))*($C->element(5,5)))
+		 +(($C->element(1,6))*($C->element(2,6))*($C->element(5,5)))
+		 +(($C->element(6,1))*($C->element(6,6))*($C->element(5,4)))
+		 +(($C->element(6,1))*($C->element(6,6))*($C->element(4,5)))
+		 +(($C->element(1,6))*($C->element(6,2))*($C->element(5,5)))
+		 +(($C->element(6,1))*($C->element(6,2))*($C->element(5,5)))
+		 +(($C->element(6,1))*($C->element(2,6))*($C->element(5,5)))
+		 +(($C->element(6,6))*($C->element(6,6))*($C->element(5,5)))
+		 -(($C->element(1,1))*($C->element(6,4))*($C->element(5,2)))
+		 -(($C->element(1,1))*($C->element(6,4))*($C->element(4,6)))
+		 -(($C->element(1,1))*($C->element(2,5))*($C->element(5,2)))
+		 -(($C->element(1,1))*($C->element(2,5))*($C->element(4,6)))
+		 -(($C->element(1,1))*($C->element(6,5))*($C->element(4,2)))
+		 -(($C->element(1,6))*($C->element(6,5))*($C->element(5,2)))
+		 -(($C->element(1,6))*($C->element(6,5))*($C->element(4,6)))
+		 -(($C->element(1,1))*($C->element(2,4))*($C->element(5,6)))
+		 -(($C->element(1,6))*($C->element(6,4))*($C->element(5,6)))
+		 -(($C->element(1,6))*($C->element(2,5))*($C->element(5,6)))
+		 -(($C->element(6,1))*($C->element(6,5))*($C->element(5,2)))
+		 -(($C->element(1,6))*($C->element(6,5))*($C->element(4,6)))
+		 -(($C->element(6,1))*($C->element(6,4))*($C->element(5,6)))
+		 -(($C->element(6,1))*($C->element(2,5))*($C->element(5,6)))
+		 -(($C->element(6,6))*($C->element(6,5))*($C->element(5,6)))
+		 -(($C->element(1,6))*($C->element(6,1))*($C->element(4,4)))
+		 -(($C->element(1,6))*($C->element(6,6))*($C->element(5,4)))
+		 -(($C->element(1,6))*($C->element(6,6))*($C->element(4,5)))
+		 -(($C->element(1,6))*($C->element(2,1))*($C->element(5,4)))
+		 -(($C->element(1,6))*($C->element(2,1))*($C->element(4,5)))
+		 -(($C->element(1,2))*($C->element(6,1))*($C->element(5,4)))
+		 -(($C->element(1,2))*($C->element(6,1))*($C->element(4,5)))
+		 -(($C->element(1,2))*($C->element(6,6))*($C->element(5,5)))
+		 -(($C->element(1,2))*($C->element(2,1))*($C->element(5,5)))
+		 -(($C->element(6,6))*($C->element(6,1))*($C->element(5,4)))
+		 -(($C->element(6,6))*($C->element(6,1))*($C->element(5,5)))
+		 -(($C->element(1,6))*($C->element(2,6))*($C->element(5,5)))
+		 -(($C->element(6,6))*($C->element(2,1))*($C->element(5,5)))
+		 -(($C->element(6,2))*($C->element(6,1))*($C->element(5,5)))
+		 +(($C->element(1,6))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(1,6))*($C->element(6,4))*($C->element(5,6)))
+		 +(($C->element(1,6))*($C->element(6,4))*($C->element(4,1)))
+		 +(($C->element(1,6))*($C->element(2,5))*($C->element(5,6)))
+		 +(($C->element(1,6))*($C->element(2,5))*($C->element(4,1)))
+		 +(($C->element(1,6))*($C->element(2,4))*($C->element(5,1)))
+		 +(($C->element(1,2))*($C->element(6,5))*($C->element(5,6)))
+		 +(($C->element(1,2))*($C->element(6,5))*($C->element(4,1)))
+		 +(($C->element(1,2))*($C->element(6,4))*($C->element(5,1)))
+		 +(($C->element(1,2))*($C->element(2,5))*($C->element(5,1)))
+		 +(($C->element(6,6))*($C->element(6,5))*($C->element(5,6)))
+		 +(($C->element(6,6))*($C->element(6,5))*($C->element(4,1)))
+		 +(($C->element(6,6))*($C->element(6,4))*($C->element(5,1)))
+# Two on a line by themselves
+		 +(($C->element(6,6))*($C->element(2,5))*($C->element(5,1)))
+		 +(($C->element(6,2))*($C->element(6,5))*($C->element(5,1)))
+		 +(($C->element(1,5))*($C->element(6,5))*($C->element(4,2)))
+		 +(($C->element(1,5))*($C->element(6,4))*($C->element(5,2)))
+		 +(($C->element(1,5))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(1,5))*($C->element(2,5))*($C->element(5,2)))
+		 +(($C->element(1,5))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(1,5))*($C->element(2,4))*($C->element(5,6)))
+		 +(($C->element(1,4))*($C->element(6,5))*($C->element(5,2)))
+		 +(($C->element(1,4))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(1,4))*($C->element(6,4))*($C->element(5,6)))
+		 +(($C->element(1,4))*($C->element(2,5))*($C->element(5,6)))
+		 +(($C->element(6,5))*($C->element(6,5))*($C->element(5,2)))
+		 +(($C->element(6,5))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(6,4))*($C->element(5,6)))
+		 +(($C->element(6,5))*($C->element(2,5))*($C->element(5,6)))
+		 +(($C->element(6,4))*($C->element(6,5))*($C->element(5,6)))
+		 -(($C->element(1,5))*($C->element(6,6))*($C->element(4,6)))
+		 -(($C->element(1,5))*($C->element(6,2))*($C->element(5,6)))
+		 -(($C->element(1,5))*($C->element(6,2))*($C->element(4,1)))
+		 -(($C->element(1,5))*($C->element(2,6))*($C->element(5,6)))
+		 -(($C->element(1,5))*($C->element(2,6))*($C->element(4,1)))
+		 -(($C->element(1,5))*($C->element(2,2))*($C->element(5,1)))
+		 -(($C->element(1,4))*($C->element(6,6))*($C->element(5,6)))
+		 -(($C->element(1,4))*($C->element(6,6))*($C->element(4,1)))
+		 -(($C->element(1,4))*($C->element(6,2))*($C->element(5,1)))
+		 -(($C->element(1,4))*($C->element(2,6))*($C->element(5,1)))
+		 -(($C->element(6,5))*($C->element(6,6))*($C->element(5,6)))
+		 -(($C->element(6,5))*($C->element(6,6))*($C->element(4,1)))
+		 -(($C->element(6,5))*($C->element(6,2))*($C->element(5,1)))
+		 -(($C->element(6,5))*($C->element(2,6))*($C->element(5,1)))
+		 -(($C->element(6,4))*($C->element(6,6))*($C->element(5,1))));
+    
+# Terse coefficents for p**3 in elastic equation
+# Data input on 11/5/05 (Perth)
+    $coeff[3] = ((($C->element(1,1))*($C->element(6,2))*($C->element(4,4)))
+		 +(($C->element(1,1))*($C->element(2,6))*($C->element(4,4)))
+		 +(($C->element(1,1))*($C->element(2,2))*($C->element(5,4)))
+		 +(($C->element(1,1))*($C->element(2,2))*($C->element(4,5)))
+		 +(($C->element(1,6))*($C->element(6,6))*($C->element(4,4)))
+		 +(($C->element(1,6))*($C->element(6,2))*($C->element(5,4)))
+		 +(($C->element(1,6))*($C->element(6,2))*($C->element(4,5)))
+		 +(($C->element(1,6))*($C->element(2,6))*($C->element(5,4)))
+		 +(($C->element(1,6))*($C->element(2,6))*($C->element(4,5)))
+		 +(($C->element(1,6))*($C->element(2,2))*($C->element(5,5)))
+		 +(($C->element(6,1))*($C->element(2,6))*($C->element(5,4)))
+		 +(($C->element(1,6))*($C->element(2,6))*($C->element(4,5)))
+		 +(($C->element(6,1))*($C->element(6,6))*($C->element(4,4)))
+		 +(($C->element(6,1))*($C->element(2,6))*($C->element(5,4)))
+		 +(($C->element(6,1))*($C->element(2,6))*($C->element(4,5)))
+		 +(($C->element(6,1))*($C->element(2,2))*($C->element(5,5)))
+		 +(($C->element(6,6))*($C->element(6,6))*($C->element(5,4)))
+		 +(($C->element(6,6))*($C->element(6,6))*($C->element(4,5)))
+		 +(($C->element(6,6))*($C->element(6,2))*($C->element(5,5)))
+		 +(($C->element(6,6))*($C->element(2,6))*($C->element(5,5)))
+		 -(($C->element(1,1))*($C->element(6,4))*($C->element(4,2)))
+		 -(($C->element(1,1))*($C->element(2,5))*($C->element(4,2)))
+		 -(($C->element(1,1))*($C->element(2,4))*($C->element(5,2)))
+		 -(($C->element(1,1))*($C->element(2,4))*($C->element(4,6)))
+		 -(($C->element(1,6))*($C->element(6,5))*($C->element(4,2)))
+		 -(($C->element(1,6))*($C->element(6,4))*($C->element(5,2)))
+# End of page 7 of my notes...
+		 -(($C->element(1,6))*($C->element(6,4))*($C->element(4,6)))
+		 -(($C->element(1,6))*($C->element(2,5))*($C->element(5,2)))
+		 -(($C->element(1,6))*($C->element(2,5))*($C->element(4,6)))
+		 -(($C->element(1,6))*($C->element(2,4))*($C->element(5,6)))
+		 -(($C->element(6,1))*($C->element(6,5))*($C->element(4,2)))
+		 -(($C->element(6,1))*($C->element(6,4))*($C->element(5,2)))
+		 -(($C->element(6,1))*($C->element(6,4))*($C->element(4,6)))
+		 -(($C->element(6,1))*($C->element(2,5))*($C->element(5,2)))
+		 -(($C->element(6,1))*($C->element(2,5))*($C->element(4,6)))
+		 -(($C->element(6,1))*($C->element(2,4))*($C->element(5,6)))
+		 -(($C->element(6,6))*($C->element(6,5))*($C->element(5,2)))
+		 -(($C->element(6,6))*($C->element(6,5))*($C->element(4,6)))
+# next line in notes only has two terms
+		 -(($C->element(6,6))*($C->element(2,5))*($C->element(5,6)))
+		 -(($C->element(6,6))*($C->element(6,4))*($C->element(5,6)))
+		 -(($C->element(1,6))*($C->element(6,6))*($C->element(4,4)))
+		 -(($C->element(1,6))*($C->element(2,6))*($C->element(5,4)))
+		 -(($C->element(1,6))*($C->element(2,6))*($C->element(4,5)))
+		 -(($C->element(1,6))*($C->element(2,1))*($C->element(4,4)))
+		 -(($C->element(1,2))*($C->element(6,6))*($C->element(5,4)))
+		 -(($C->element(1,2))*($C->element(6,6))*($C->element(4,5)))
+		 -(($C->element(1,2))*($C->element(2,1))*($C->element(5,4)))
+		 -(($C->element(1,2))*($C->element(2,1))*($C->element(4,5)))
+		 -(($C->element(1,2))*($C->element(2,6))*($C->element(5,5)))
+		 -(($C->element(1,2))*($C->element(6,1))*($C->element(4,4)))
+		 -(($C->element(6,6))*($C->element(6,1))*($C->element(4,4)))
+		 -(($C->element(6,6))*($C->element(6,6))*($C->element(5,4)))
+		 -(($C->element(6,6))*($C->element(6,6))*($C->element(4,5)))
+		 -(($C->element(6,6))*($C->element(2,1))*($C->element(5,4)))
+		 -(($C->element(6,6))*($C->element(2,1))*($C->element(4,5)))
+		 -(($C->element(6,6))*($C->element(2,6))*($C->element(5,5)))
+		 -(($C->element(6,2))*($C->element(6,1))*($C->element(5,4)))
+		 -(($C->element(6,2))*($C->element(6,1))*($C->element(5,4)))
+		 -(($C->element(6,2))*($C->element(6,6))*($C->element(5,5)))
+		 -(($C->element(6,2))*($C->element(2,1))*($C->element(5,5)))
+#
+		 +(($C->element(1,6))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(1,6))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(1,6))*($C->element(2,4))*($C->element(5,6)))
+		 +(($C->element(1,6))*($C->element(2,4))*($C->element(4,1)))
+		 +(($C->element(1,2))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(1,2))*($C->element(6,4))*($C->element(5,6)))
+		 +(($C->element(1,2))*($C->element(6,4))*($C->element(4,1)))
+		 +(($C->element(1,2))*($C->element(2,5))*($C->element(5,6)))
+		 +(($C->element(1,2))*($C->element(2,5))*($C->element(4,1)))
+		 +(($C->element(6,6))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(6,6))*($C->element(6,4))*($C->element(6,4)))
+		 +(($C->element(6,6))*($C->element(6,4))*($C->element(4,1)))
+		 +(($C->element(6,6))*($C->element(2,5))*($C->element(5,6)))
+		 +(($C->element(6,6))*($C->element(2,5))*($C->element(4,1)))
+		 +(($C->element(6,6))*($C->element(2,4))*($C->element(5,1)))
+		 +(($C->element(6,2))*($C->element(6,5))*($C->element(5,6)))
+		 +(($C->element(6,2))*($C->element(6,5))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(6,4))*($C->element(5,1)))
+		 +(($C->element(6,2))*($C->element(2,5))*($C->element(5,1)))
+		 +(($C->element(1,2))*($C->element(2,4))*($C->element(5,1)))
+#
+		 +(($C->element(1,5))*($C->element(6,4))*($C->element(4,2)))
+		 +(($C->element(1,5))*($C->element(2,5))*($C->element(4,2)))
+		 +(($C->element(1,5))*($C->element(2,4))*($C->element(5,2)))
+		 +(($C->element(1,5))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(1,4))*($C->element(6,5))*($C->element(4,2)))
+		 +(($C->element(1,4))*($C->element(6,4))*($C->element(5,2)))
+		 +(($C->element(1,4))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(1,4))*($C->element(2,5))*($C->element(5,2)))
+		 +(($C->element(1,4))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(1,4))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(6,4))*($C->element(5,2)))
+		 +(($C->element(6,5))*($C->element(6,5))*($C->element(5,6)))
+		 +(($C->element(6,5))*($C->element(2,5))*($C->element(5,2)))
+		 +(($C->element(6,5))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(2,4))*($C->element(5,6)))
+		 +(($C->element(6,4))*($C->element(6,5))*($C->element(5,2)))
+		 +(($C->element(6,4))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(6,4))*($C->element(5,6)))
+		 +(($C->element(6,4))*($C->element(2,5))*($C->element(5,6)))
+# END OF PAGE 8 of my notes
+		 -(($C->element(1,5))*($C->element(6,2))*($C->element(4,6)))
+		 -(($C->element(1,5))*($C->element(2,6))*($C->element(4,6)))
+		 -(($C->element(1,5))*($C->element(2,6))*($C->element(5,6)))
+		 -(($C->element(1,5))*($C->element(2,2))*($C->element(4,1)))
+		 -(($C->element(1,4))*($C->element(6,6))*($C->element(4,6)))
+		 -(($C->element(1,4))*($C->element(6,2))*($C->element(5,6)))
+		 -(($C->element(1,4))*($C->element(6,2))*($C->element(4,1)))
+		 -(($C->element(1,4))*($C->element(2,6))*($C->element(5,6)))
+		 -(($C->element(1,4))*($C->element(2,6))*($C->element(4,1)))
+		 -(($C->element(1,4))*($C->element(2,2))*($C->element(5,1)))
+		 -(($C->element(6,5))*($C->element(6,6))*($C->element(4,6)))
+		 -(($C->element(6,5))*($C->element(6,2))*($C->element(5,6)))
+		 -(($C->element(6,5))*($C->element(6,2))*($C->element(4,1)))
+		 -(($C->element(6,5))*($C->element(2,6))*($C->element(5,6)))
+		 -(($C->element(6,5))*($C->element(2,6))*($C->element(4,1)))
+		 -(($C->element(6,5))*($C->element(2,2))*($C->element(5,1)))
+		 -(($C->element(6,4))*($C->element(6,6))*($C->element(5,6)))
+		 -(($C->element(6,4))*($C->element(6,6))*($C->element(4,1)))
+		 -(($C->element(6,4))*($C->element(6,2))*($C->element(5,1)))
+		 -(($C->element(6,4))*($C->element(2,6))*($C->element(5,1))));
+    
+# Terms in p**4
+# Terse file created 11/5/05 - Perth
+    $coeff[4] = ((($C->element(1,1))*($C->element(2,2))*($C->element(4,4)))
+		 +(($C->element(1,6))*($C->element(6,2))*($C->element(4,4)))
+		 +(($C->element(1,6))*($C->element(2,6))*($C->element(4,4)))
+		 +(($C->element(1,6))*($C->element(2,2))*($C->element(5,4)))
+		 +(($C->element(1,6))*($C->element(2,2))*($C->element(4,5)))
+		 +(($C->element(6,1))*($C->element(6,2))*($C->element(4,4)))
+		 +(($C->element(6,1))*($C->element(2,6))*($C->element(4,4)))
+		 +(($C->element(6,1))*($C->element(2,2))*($C->element(5,4)))
+		 +(($C->element(6,1))*($C->element(2,2))*($C->element(4,4)))
+		 +(($C->element(6,6))*($C->element(6,6))*($C->element(4,4)))
+		 +(($C->element(6,6))*($C->element(6,2))*($C->element(5,4)))
+		 +(($C->element(6,6))*($C->element(6,2))*($C->element(4,5)))
+		 +(($C->element(6,6))*($C->element(2,6))*($C->element(5,4)))
+		 +(($C->element(6,6))*($C->element(2,6))*($C->element(4,5)))
+		 +(($C->element(6,6))*($C->element(2,2))*($C->element(5,5)))
+#
+		 -(($C->element(1,1))*($C->element(2,4))*($C->element(4,2)))
+		 -(($C->element(1,6))*($C->element(6,4))*($C->element(4,2)))
+		 -(($C->element(1,6))*($C->element(2,5))*($C->element(4,2)))
+		 -(($C->element(1,6))*($C->element(2,4))*($C->element(5,2)))
+		 -(($C->element(1,6))*($C->element(2,4))*($C->element(4,6)))
+		 -(($C->element(6,1))*($C->element(6,4))*($C->element(4,2)))
+		 -(($C->element(6,1))*($C->element(2,5))*($C->element(4,2)))
+		 -(($C->element(6,1))*($C->element(2,4))*($C->element(5,2)))
+		 -(($C->element(6,1))*($C->element(2,4))*($C->element(4,6)))
+		 -(($C->element(6,6))*($C->element(6,5))*($C->element(4,2)))
+		 -(($C->element(6,6))*($C->element(2,5))*($C->element(5,2)))
+		 -(($C->element(6,6))*($C->element(2,5))*($C->element(4,6)))
+		 -(($C->element(6,6))*($C->element(6,4))*($C->element(5,2)))
+		 -(($C->element(6,6))*($C->element(6,4))*($C->element(4,6)))
+		 -(($C->element(6,6))*($C->element(2,4))*($C->element(5,6)))
+#
+		 -(($C->element(1,6))*($C->element(2,6))*($C->element(4,4)))
+		 -(($C->element(1,2))*($C->element(6,6))*($C->element(4,4)))
+		 -(($C->element(1,2))*($C->element(2,1))*($C->element(4,4)))
+		 -(($C->element(1,2))*($C->element(2,6))*($C->element(5,4)))
+		 -(($C->element(1,2))*($C->element(2,6))*($C->element(4,5)))
+		 -(($C->element(6,6))*($C->element(6,6))*($C->element(4,4)))
+		 -(($C->element(6,6))*($C->element(2,1))*($C->element(4,4)))
+		 -(($C->element(6,6))*($C->element(2,6))*($C->element(5,4)))
+		 -(($C->element(6,6))*($C->element(2,6))*($C->element(4,5)))
+		 -(($C->element(6,2))*($C->element(6,1))*($C->element(4,4)))
+		 -(($C->element(6,2))*($C->element(6,6))*($C->element(5,4)))
+		 -(($C->element(6,2))*($C->element(6,6))*($C->element(4,5)))
+		 -(($C->element(6,2))*($C->element(2,1))*($C->element(5,4)))
+		 -(($C->element(6,2))*($C->element(2,1))*($C->element(4,5)))
+		 -(($C->element(6,2))*($C->element(2,6))*($C->element(5,5)))
+# END of page 9 of my notes
+		 +(($C->element(1,6))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(1,2))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(1,2))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(1,2))*($C->element(2,4))*($C->element(5,6)))
+		 +(($C->element(1,2))*($C->element(2,4))*($C->element(4,1)))
+		 +(($C->element(6,6))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(6,6))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(6,6))*($C->element(2,4))*($C->element(5,6)))
+		 +(($C->element(6,6))*($C->element(2,4))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(6,5))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(6,4))*($C->element(5,6)))
+		 +(($C->element(6,2))*($C->element(6,4))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(2,5))*($C->element(5,6)))
+		 +(($C->element(6,2))*($C->element(2,5))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(2,4))*($C->element(5,1)))
+#
+		 +(($C->element(1,5))*($C->element(2,4))*($C->element(4,2)))
+		 +(($C->element(1,4))*($C->element(6,4))*($C->element(4,2)))
+		 +(($C->element(1,4))*($C->element(2,5))*($C->element(4,2)))
+		 +(($C->element(1,4))*($C->element(2,4))*($C->element(5,2)))
+		 +(($C->element(1,4))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(6,5))*($C->element(2,4))*($C->element(5,3)))
+		 +(($C->element(6,5))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(6,5))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(6,4))*($C->element(5,2)))
+		 +(($C->element(6,4))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(2,3))*($C->element(5,2)))
+		 +(($C->element(6,4))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(2,4))*($C->element(5,6)))
+#
+		 -(($C->element(1,5))*($C->element(2,2))*($C->element(4,6)))
+		 -(($C->element(1,4))*($C->element(2,6))*($C->element(4,6)))
+		 -(($C->element(1,4))*($C->element(2,6))*($C->element(4,6)))
+		 -(($C->element(1,4))*($C->element(2,2))*($C->element(5,6)))
+		 -(($C->element(1,4))*($C->element(2,2))*($C->element(4,1)))
+		 -(($C->element(6,5))*($C->element(6,2))*($C->element(4,6)))
+		 -(($C->element(6,5))*($C->element(2,6))*($C->element(4,6)))
+		 -(($C->element(6,5))*($C->element(2,2))*($C->element(5,6)))
+		 -(($C->element(6,5))*($C->element(2,2))*($C->element(4,1)))
+		 -(($C->element(6,4))*($C->element(6,6))*($C->element(4,6)))
+		 -(($C->element(6,4))*($C->element(6,2))*($C->element(5,6)))
+		 -(($C->element(6,4))*($C->element(6,2))*($C->element(4,1)))
+		 -(($C->element(6,4))*($C->element(2,6))*($C->element(5,6)))
+		 -(($C->element(6,4))*($C->element(2,6))*($C->element(4,1)))
+		 -(($C->element(6,4))*($C->element(2,2))*($C->element(5,1))));
+
+# Terms in p**5
+# terse file created 11/5/05 Perth
+    $coeff[5] = ((($C->element(1,6))*($C->element(2,2))*($C->element(4,4)))
+		 +(($C->element(6,1))*($C->element(2,2))*($C->element(4,4)))
+		 +(($C->element(6,6))*($C->element(6,2))*($C->element(4,4)))
+		 +(($C->element(6,6))*($C->element(2,6))*($C->element(4,4)))
+		 +(($C->element(6,6))*($C->element(2,2))*($C->element(5,4)))
+		 +(($C->element(6,6))*($C->element(2,2))*($C->element(4,5)))
+		 -(($C->element(1,6))*($C->element(2,4))*($C->element(4,2)))
+		 -(($C->element(6,1))*($C->element(2,4))*($C->element(4,2)))
+		 -(($C->element(6,6))*($C->element(2,5))*($C->element(4,2)))
+		 -(($C->element(6,6))*($C->element(6,4))*($C->element(4,2)))
+		 -(($C->element(6,6))*($C->element(2,4))*($C->element(5,2)))
+		 -(($C->element(6,6))*($C->element(2,4))*($C->element(4,6)))
+		 -(($C->element(1,2))*($C->element(2,6))*($C->element(4,4)))
+		 -(($C->element(6,6))*($C->element(2,6))*($C->element(4,4)))
+		 -(($C->element(6,2))*($C->element(6,6))*($C->element(4,4)))
+		 -(($C->element(6,2))*($C->element(2,1))*($C->element(4,4)))
+		 -(($C->element(6,2))*($C->element(2,6))*($C->element(5,4)))
+		 -(($C->element(6,2))*($C->element(2,6))*($C->element(4,5)))
+		 +(($C->element(1,2))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(6,6))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(6,2))*($C->element(6,4))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(2,5))*($C->element(4,1)))
+		 +(($C->element(6,2))*($C->element(2,4))*($C->element(5,6)))
+		 +(($C->element(6,2))*($C->element(2,4))*($C->element(4,1)))
+		 +(($C->element(1,4))*($C->element(2,4))*($C->element(4,2)))
+		 +(($C->element(6,5))*($C->element(2,4))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(6,4))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(2,5))*($C->element(4,6)))
+		 +(($C->element(6,4))*($C->element(2,4))*($C->element(5,2)))
+		 +(($C->element(6,4))*($C->element(2,4))*($C->element(4,6)))
+		 -(($C->element(1,4))*($C->element(2,2))*($C->element(4,6)))
+		 -(($C->element(6,5))*($C->element(2,2))*($C->element(4,6)))
+		 -(($C->element(6,4))*($C->element(6,2))*($C->element(4,6)))
+		 -(($C->element(6,4))*($C->element(2,6))*($C->element(4,6)))
+		 -(($C->element(6,4))*($C->element(2,2))*($C->element(5,4)))
+		 -(($C->element(6,4))*($C->element(2,2))*($C->element(4,1))));
+    
+# Coefficents for terms in p**6
+# terse file created 11/5/05 Perth
+    $coeff[6] = ((($C->element(6,6))*($C->element(2,2))*($C->element(4,4)))
+		 -(($C->element(6,6))*($C->element(2,4))*($C->element(4,2)))
+		 -(($C->element(6,2))*($C->element(2,6))*($C->element(4,4)))
+		 +(($C->element(6,2))*($C->element(2,4))*($C->element(4,1)))
+		 +(($C->element(6,4))*($C->element(2,4))*($C->element(4,6)))
+		 -(($C->element(6,4))*($C->element(2,2))*($C->element(4,6))));
+    
+# End of autogenerated guff ########################################################
+    return ($coeff[0], $coeff[1], $coeff[2], $coeff[3], $coeff[4], $coeff[5], $coeff[6]);    
+}

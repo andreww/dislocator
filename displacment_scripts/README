@@ -1,0 +1,23 @@
+The perl scripts:
+
+   *  edge_isotropic_displacments
+   *  edge_ortho_displacments
+   *  screw_ortho_displacments
+   *  general_case_displacments
+
+read a set of elastic constants from a gulp output
+file, a Burgers vector, and a set of atomic positions
+(in 1D gulp input file format) and write out the atomic
+positions modified by the elastic displacment field for 
+the relevent type of dislocaton and form of the elastic 
+matrix. This is the key setup step needed to set up a 
+1D gulp dislocation calculation.
+
+The general case code involves building (and solving) a
+sextic polynomial with lots of combinations of elastic
+constants contibuting to the coefficents of the polynomial. 
+Retyping these terms would be tedious, so they are encoded 
+in coeff*.inp. Two scripts are provided to turn these into 
+a perl subroutine and a latex equation (coef2perl and 
+coef2latex, respectivly).
+

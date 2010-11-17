@@ -1,0 +1,38 @@
+This package provides a collection of scripts
+(mostly written in perl) which can be used to 
+perform atomic scale simulations of dislocation
+cores at the atomic scale using GULP as the 
+main calculation engine. The scripts are
+licensed under the GPL. The basic approach 
+used is described in:
+
+A. M. Walker, J. D. Gale, B. Slater and 
+K. Wright (2005) "Atomic scale modelling of 
+the cores of dislocations in complex materials 
+part 2: applications", Physical Chemistry 
+Chemical Physics, 7 pp.3235-3242. 
+doi:10.1039/B505716G
+
+please cite this work in any work based on these
+scripts. Some more recent developments have been 
+briefly described in:
+
+A. M. Walker (2010) "Simulation of screw dislocations 
+in wadsleyite" Physics and Chemistry of Minerals, 37, 
+pp.301-310. doi:10.1007/s00269-009-0334-y 
+
+and
+
+A. M. Walker, P. Carrez and P. Cordier (2010) "Atomic 
+scale models of dislocation cores in minerals: progress 
+and prospects" Mineralogical Magazine, 74, pp.381-413. 
+doi:10.1180/minmag.2010.074.3.381 
+
+The current status of these tools requiers the user to be 
+familar with perl as modifications to the scripts are 
+requiered for any new system studied. Contact the author 
+<andrew.walker@bristol.ac.uk> for advice. Work to migrate 
+these tools to a language more sutible for scientific 
+computing is planned. The development of the ideas 
+embodied in these tools was supported by NERC and EPSRC.
+

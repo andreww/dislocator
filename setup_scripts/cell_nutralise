@@ -1,0 +1,293 @@
+#! /usr/bin/perl -w
+
+#
+#    Copyright 2010 Andrew Walker
+#
+#    This file is part of the Dislocator package.
+#
+#    The Dislocator package is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    The Dislocator package is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with the Dislocator package.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+
+# A script to nutralise a wadslite cell based on concept of cnu.
+
+# Andrew Walker 7 - 1 - 2003
+
+
+# Read arguments
+
+my $tot_r = $ARGV[0];
+my $del_r = $ARGV[1];
+my $inputfile = $ARGV[2];
+my $outputfile = $ARGV[3];
+
+my $num = '[-+]?\d+\.?\d*'; # Matches any number, fp or dec
+my $num_at = 0;
+
+open INPUT, "< $inputfile"
+    or die "could not open $inputfile: $!";
+
+print "NutCell: $inputfile open for input\n";
+while (<INPUT>) {
+    
+    if  # if statment to match atom data.
+	(/                                      ###################
+	                                        #Patern to match: #
+	 (\w+\s+core)\s+                        #Atom name        #
+	 ($num)\s+($num)\s+($num)\s+($num)\s+   #Coord and charge #
+	 ($num[\s+\d\s+\d\s+\d]?)               #occup and ?flags #
+	                                        ###################
+	/xo) 
+    {  # Found an atom - store its details and bung a marker in $_ 
+	
+	$atom_name[$num_at] = $1;
+	$cart_x[$num_at] = $2; # NOTE will fall down for res files
+                               # as they use frac cart cart...
+	$cart_y[$num_at] = $3;
+	$cart_z[$num_at] = $4;
+	$atom_chrg[$num_at] = $5;
+	$atom_flag[$num_at] = $6;
+	
+	$_ = "#<<ATOM $num_at>>#";
+	
+	$num_at ++;
+	
+#    } elsif (/^\#\sDislocator:\sradius\s+($num),\shight\s+$num/xo) {
+
+#	$r2_size = $1;
+    } elsif (/($num)/o) {
+	$a_param = $1;
+    }
+    
+#    print "$_";
+    
+    push @lines, $_;
+    
+}
+
+
+close INPUT;
+print "NutCell: input read, $num_at atoms found\n";
+print "NutCell: cell paramiter is $a_param\n";
+print "NutCell: calculating charge and dipole\n";
+
+my $total_charge = 0;
+my $dipole_y = 0;
+my $dipole_z = 0;
+
+foreach (0 .. ($num_at-1)) {
+    $total_charge += $atom_chrg[$_];
+    $dipole_y += ($atom_chrg[$_] * $cart_y[$_]);
+    $dipole_z += ($atom_chrg[$_] * $cart_z[$_]);
+}
+
+
+printf "NutCell: total charge = %10f e\n", $total_charge;
+printf "NutCell: total dipole moments:\nnutralisecell:\ty= %10f e.Ang\nnutralisecell:\tz= %10f e.Ang\n", $dipole_y, $dipole_z;
+
+print "NutCell: removing cations from buffer region\n";
+$rad_to_buffer = $tot_r - $del_r;
+print "NutCell: atoms with radius from (x,0,0) bigger than $rad_to_buffer to be removed\n ";
+foreach (0 .. ($num_at-1)) {
+    if (($atom_name[$_] =~ /Si/) or ($atom_name[$_] =~ /Mg/)) {
+	$r_atom = sqrt(($cart_y[$_] * $cart_y[$_]) 
+		       + ($cart_z[$_] * $cart_z[$_]));
+	if ($r_atom > $rad_to_buffer) {
+	    print "Removing cation number $_\t";
+	    print "$atom_name[$_]\t";
+	    print "(y = $cart_y[$_], z= $cart_z[$_])\n";
+	    push @remove, $_; 
+	    $atom_chrg[$_] = 0; # to make next dipole calc work...
+	}
+    }
+}
+
+
+print "NutCell:list of atoms to remove is @remove\n";
+print "NutCell: looping over oxygen ions to establish co-ordination...\n";
+
+# Maximum bond lengths...
+$si_o = 1.8;
+$si_charge_contrib = (-4.00 / 4);
+$mg_o = 2.3;
+$mg_charge_contrib = (-2.00 / 6);
+
+# NB this is a realy bad way to do it 
+# better to have arrays of each atom type 
+# or some better data structure
+# but I cannot be bothered to redo whole code...
+
+# 3D - x needs converting... and periodic...
+
+foreach (0 .. ($num_at - 1)) {
+    if (($atom_name[$_] =~ /Si/) or ($atom_name[$_] =~ /Mg/)) {
+	print "NutCell (algo): A cation - next. \t ($atom_name[$_])\n";
+	next;
+    } else {
+	print "NutCell (algo): looking at ion $_.\t ($atom_name[$_])\n";
+	print "NutCell (algo): Charge set to zero\n";
+# set charge to zero
+	$atom_chrg[$_] = 0;
+	print "NutCell (algo): Checking all Mg ions\n";
+	foreach $an_mg (0  .. ($num_at -1)) {
+	    if (($atom_name[$an_mg] =~ /Si/) or ($atom_name[$an_mg] =~ /O/)) {
+		next;
+	    } else {
+		foreach $x_mult (-1 .. 1) {
+		    my $del_x_2 = ($cart_x[$_] - 
+				   ($cart_x[$an_mg] + 
+				    ($x_mult * $a_param))) ** 2;
+		    if ($del_x_2 < ($mg_o ** 2)) {
+			my $del_y_2 = ($cart_y[$_] - $cart_y[$an_mg]) ** 2;
+			if ($del_y_2 < ($mg_o ** 2)) {
+			    my $del_z_2 = ($cart_z[$_] - $cart_z[$an_mg]) ** 2;
+			    if ($del_z_2 < ($mg_o ** 2)) {
+				my $r_atom = sqrt($del_y_2 + $del_z_2);
+				if ($r_atom < $mg_o) {
+				    print "NutCell (algo): Oxygen $_ co-ordinates magnesium $an_mg";
+				    my $remove_flag = 1;
+				    foreach $removed (@remove) {
+					if ($removed == $an_mg) {
+					    print " ------ --- removed";
+					    $remove_flag = 0;
+					} 
+				    }
+# add some charge...
+				    if ($remove_flag == 1) {
+					if ($atom_name[$an_mg] =~ /Mg2/) {
+					    if ($atom_name[$_] =~ /O2/) {
+						$atom_chrg[$_] -= $mg_charge_contrib; # in this case we dont want to add.
+						print " Mg2-O2";
+					    } elsif ($atom_name[$_] =~ /O1/) {
+						$atom_chrg[$_] += $mg_charge_contrib; # in this case we want to add twice.
+						print " Mg2-O1";
+					    } else {
+						print " -----";
+					    }
+					} else {
+					    print " -----";
+					} 
+					$atom_chrg[$_] += $mg_charge_contrib;
+					print " --- charge now $atom_chrg[$_]";
+				    }
+				    print "\n";
+				    
+				    
+				}
+			    }
+			}
+		    }
+		}
+	    }
+	}
+	    
+	print "NutCell (algo): Checking all Si ions\n";
+	foreach $an_si (0  .. ($num_at -1)) {
+	    if (($atom_name[$an_si] =~ /Mg/) or ($atom_name[$an_si] =~ /O/)) {
+		next;
+	    } else {
+		foreach $x_mult (-1 .. 1) {
+		    my $del_x_2 = ($cart_x[$_] - 
+				   ($cart_x[$an_si] + 
+				    ($x_mult * $a_param))) ** 2;
+		    if ($del_x_2 < ($si_o ** 2)) {		
+			my $del_y_2 = ($cart_y[$_] - $cart_y[$an_si]) ** 2;
+			if ($del_y_2 < ($si_o ** 2)) {
+			    my $del_z_2 = ($cart_z[$_] - $cart_z[$an_si]) ** 2;
+			    if ($del_z_2 < ($si_o ** 2)) {
+				my $r_atom = sqrt($del_y_2 + $del_z_2);
+				if ($r_atom < $si_o) {
+				    print "NutCell (algo): Oxygen $_ co-ordinates silicone $an_si ";
+
+				    my $remove_flag = 1;
+				    foreach $removed (@remove) {
+					if ($removed == $an_si) {
+					    print " ------ --- removed";
+					    $remove_flag = 0;
+					} 
+				    }
+# add some charge...
+				    if ($remove_flag == 1) {
+					$atom_chrg[$_] += $si_charge_contrib;
+					print " ------ --- charge now $atom_chrg[$_]";
+				    }
+				    print "\n";
+				    
+				}
+			    }
+			}
+		    }
+		}
+	    }
+	}
+    }
+}
+{ # Should be a subroutine...
+    print "NutCell: calculating charge and dipole post nutralisation\n";
+
+    my $total_charge = 0;
+    my $dipole_y = 0;
+    my $dipole_z = 0;
+    
+    foreach (0 .. ($num_at-1)) {
+	$total_charge += $atom_chrg[$_];
+	$dipole_y += ($atom_chrg[$_] * $cart_y[$_]);
+	$dipole_z += ($atom_chrg[$_] * $cart_z[$_]);
+    }
+
+
+printf "NutCell: total charge = %10f e\n", $total_charge;
+printf "NutCell: total dipole moments:\nnutralisecell:\ty= %10f e.Ang\nnutralisecell:\tz= %10f e.Ang\n", $dipole_y, $dipole_z;
+}
+print "NutCell: Dumping new gin file...\n";
+open OUTPUT, "> $outputfile"
+    or die "could not open $outputfile: $!";
+
+print "NntCell: $outputfile open for output\n";
+select OUTPUT;
+$dropped_atoms = 0;
+
+print "single\n\n";
+foreach (@lines) {
+
+    if (/\#<<ATOM (\d+)>>\#/) {
+	my $at = $1;
+	if ($atom_chrg[$at] != 0) {
+	$_ = "$atom_name[$at] $cart_x[$at] $cart_y[$at] $cart_z[$at] $atom_chrg[$at] $atom_flag[$at]";
+	
+	} else {
+	    $dropped_atoms ++;
+	    next;
+	}
+    }
+print $_;       
+}
+
+print "\n";
+print "buck\n";
+print "Mg    core O     core  1428.50000     0.294530  0.000000      0.00 10.00\n";
+print "buck\n";
+print "Si    core O     core  1283.90730     0.320520  10.66200      0.00 10.00\n";
+print "buck\n";
+print "O     core O     core  22764.0000     0.149000  27.88000      0.00 10.00\n";
+print "three\n";
+print "Si    core O     core O     core 2.0972      109.47000 &\n";
+print "  0.000  2.000  0.000  2.000  0.000  3.000\n";
+
+select STDOUT;
+close OUTPUT;
+print "nutralisecell: output finished\n";
+print "nutralisecell: total of $dropped_atoms atoms removed\n";
+print "nutralisecell: Exiting\n";
+exit(0);

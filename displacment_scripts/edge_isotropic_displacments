@@ -1,0 +1,320 @@
+#! /usr/bin/perl -w
+
+#
+#    Copyright 2010 Andrew Walker
+#
+#    This file is part of the Dislocator package.
+#
+#    The Dislocator package is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    The Dislocator package is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with the Dislocator package.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+
+use Math::Trig;
+
+# read in filename for elastic info, burgurs vector 
+#                    cell input name, cell output name
+
+# Adding liniar interplation forcenter of dislocation
+
+#
+#  N.B Burgers vector is along x3 
+#      Dislocation line along  x1
+#      
+
+
+
+my ($burg_vec, $cell_input, $cell_output) = @ARGV;
+my $num =  '[-+]?\d+\.?\d*'; # Matches any number, fp or dec
+print "Running dislocator (anisotropic)....\n";
+print "Paramiters are:\n";
+# print "gout file for elastic params: $elast_file\n";
+print "burgers vector length: $burg_vec\n";
+print "cell file w/o dislocation: $cell_input\n";
+print "cell file with dislocation: $cell_output\n"; 
+print "============================================================\n";
+#print "Geting elastic constants\n";
+#my ($s44, $s55) = &get_elastic ($elast_file);
+#print "done, $s44, $s55\n";
+print "opening files for IO\n";
+
+open INPUT, "<$cell_input"
+    or die "Could not open input file $cell_input : $!";
+open OUTPUT, ">$cell_output"
+    or die "Could not open output file $cell_output : $!";
+my $number_of_atoms = 0;
+while (<INPUT>) {
+
+    if  # if statment to match atom data.
+	(/^                                     ###################
+	                                        #Patern to match: #
+	 (\w+\s+core)\s+                        #Atom name        #
+	 ($num)\s+($num)\s+($num)\s+($num)\s+   #Coord and charge #
+	 ($num[\s+\d\s+\d\s+\d]?)               #occup and ?flags #
+	                                        ###################
+	 /xo) 
+    {  # Found an atom - store its details and bung a marker in $_ 
+	
+	my $atom_name = $1;
+	my $cart_x = $2; # NOTE will fall down for res files
+                         # as they use frac cart cart...
+	my $cart_y = $3;
+	my $cart_z = $4;
+	my $atom_chrg = $5;
+	my $atom_flag = $6;
+
+	$number_of_atoms ++;
+
+# Move the atom # note rotation of axies
+#	($cart_y, $cart_z) = &displace_atom ($cart_y, $cart_z,
+#					     0 , 0);
+	
+#	$cart_x = &anisotropic_1 ($cart_y, $cart_z, $cart_x,
+#				  $s44, $s55, $burg_vec);
+	
+	($cart_z, $cart_y) = &isotropic_edge ($cart_z, $cart_y, $cart_x,
+					      0.25 ,$burg_vec); 
+
+# define poss ratio as 0.25 - cauchy solid for the time being...
+	
+	
+
+# redefine $_ 
+	$_ =  "$atom_name $cart_x $cart_y $cart_z $atom_chrg $atom_flag";
+    }
+
+    print OUTPUT "$_";
+}
+
+
+close INPUT;
+close OUTPUT;
+print "Finished - done $number_of_atoms atoms\n";
+
+sub displace_atom {
+# dislplaces atom on y and z (in gulp speak) and 
+# returns an array @y,z...
+    my ($y, $z, $dy, $dz) = @_;
+    $y += $dy;
+    $z += $dz;
+    return ($y, $z);
+}
+
+sub isotropic_edge {
+
+#
+#  based on eq 22 of Kosevich (p 50 of Dislocations in Solids)
+#
+
+    my ($x, $y, $z, $poissons, $burg) = @_;
+
+    print "isotropic_edge: $x, $y, $z, $poissons, $burg  \n";
+
+# Calculate r^2 and theta (from 0 - 2pi)
+
+    if (($x == 0) and ($y == 0)) {
+	return (0, 0);
+    }
+
+    my $r_sq = ($x*$x + $y*$y);
+    if ($r_sq == 0) {
+	$r_sq =  0.000000000000000000000000000000000001;
+    }
+
+    my $r = sqrt $r_sq;
+    print "r squared = $r_sq\n";
+
+
+    my $angle = 0;
+    if ($x == 0.0) {
+	$x = 0.0000000000000000000000000000000000000001;
+    }
+    if (($y >= 0) and ($x > 0)) {
+	$angle = atan ($y/$x);
+    } elsif (($y >= 0) and ($x < 0)) {
+	$angle = atan ($y/$x) + pi;
+    } elsif (($y < 0) and ($x < 0)) {
+	$angle = atan ($y/$x)  + pi;
+    } elsif (($y < 0) and ($x > 0)) {
+	$angle = atan ($y/$x) + 2*pi;
+    } else {
+	die "error in angle calc (sub anisotropic_1)!\n";
+    }
+    print "theta = $angle rads\n";
+
+# calculate ux and uy
+
+#    my $u_x = (($burg / 2 * pi) *
+#	       ($angle + ( (1/(2*(1-$poissons))) * 
+#			   (($x * $y)/$r_sq))));
+    
+#    my $u_y = (($burg / ((4 * pi) * (1-$poissons)))
+#	      * (((1 - (2*$poissons)) *
+#		  ln ($r)) + (($x*$x)/$r_sq)));
+
+# Nabarros solutions
+
+    my $u_x = (($burg / ((4 * pi) * (1-$poissons))) *
+	       (($x * $y) / $r_sq) - (($burg/(2*pi)) *
+				      $angle));
+	       
+    my $u_y = -1 * ((((1 - (2*$poissons))*$burg)/
+		     (8 * pi * (1-$poissons))) *
+		    log ($r_sq/($burg*$burg))) +
+		    (($burg/(4 * pi * (1-$poissons))) *
+		     (($y * $y)/$r_sq));
+
+# return new co-ords
+
+    print "Dx = $u_x\tDy = $u_y\n";
+
+    $x += $u_x;
+    $y += $u_y;
+ 
+
+   
+    return ($x, $y);
+
+}
+
+
+sub anisotropic_1 {
+# based on eq 3.13 from Steeds book. puts a screw dislocation into
+# material along z (NB must then rotate xyz so it is allong x!)
+    my ($x, $y, $z, $S_44, $S_55, $burg) = @_;
+    print "sub anisotropic_1 called, paramiters are:\n";
+    print "$x, $y, $z, $S_44, $S_55\n";
+
+
+# Local variables  - may need to be able to change from comand
+# line eventualy...
+
+    my $force_isotropic = 1; # seting this to 1 forces an
+                             # isotropic solution
+    my $inter_radius = 8;    # Radius to interpolate accross core.
+
+
+# Are we forcing isotropic limit? 
+    if ($force_isotropic == 1) {
+	$S_44 = $S_55; # this line fores the isotropic limit
+	print "Forcing isotropic limit solution!\n";  
+    }
+
+# Do we need to calculate R and frac?
+my $frac_move = 1; # assume we are outside radius 
+    if ($inter_radius > 0) {
+	my $r_sqr = (($x * $x) + ($y * $y));
+	if ($r_sqr < ($inter_radius * $inter_radius)) {
+	    $frac_move = ((sqrt ($r_sqr)) / $inter_radius);
+	    print "Frac of solution to move = $frac_move\n";
+	} 
+    }
+
+# calculate angle around z from x.
+    # (such that theta runs from 0 to 2pi
+    # not -pi to pi twice!)
+    # also modulate the angle so as 
+    # to apply an anisotropic solution.
+
+    my $angle = 0;
+    if ($x == 0.0) {
+	$x = 0.00000000000000000000000000000000000000000000001;
+    }
+    if (($y >= 0) and ($x > 0)) {
+	$angle = atan (($y/$x) *
+		       sqrt ($S_44/$S_55)) ;
+    } elsif (($y >= 0) and ($x < 0)) {
+	$angle = atan (($y/$x) *
+		       sqrt ($S_44/$S_55)) + pi;
+    } elsif (($y < 0) and ($x < 0)) {
+	$angle = atan (($y/$x) * 
+		       sqrt ($S_44/$S_55)) + pi;
+    } elsif (($y < 0) and ($x > 0)) {
+	$angle = atan (($y/$x) *
+		       sqrt ($S_44/$S_55)) + 2*pi;
+    } else {
+	die "error in angle calc (sub anisotropic_1)!\n";
+    }
+    print "theta = $angle rads\n";
+
+    # work out displacments
+    my $displacement = $frac_move * ($burg * ($angle/(2*pi)));
+    print "Moving atom $displacement along z (x) axis\n";
+    $z += $displacement;
+    print "volt field data: $x $y $displacement\n";
+    print "new position of atom is:\n";
+    print "$x, $y, $z\n";
+    print "-----------------------------------------------\n";
+    return $z;
+}
+
+sub get_elastic {
+
+#
+# this subroutine is intended to extract the elastic constas
+# from a gulp output file
+#
+
+    my $filename = $_[0];
+    print "Atempting to read elastic complience matrix from $filename\n";
+    my $compl_flag = 0;
+    my @s;
+
+    open GULPOUT, "<$filename" 
+	or die "could not open $filename : $!\n";
+
+    while (<GULPOUT>) {
+	
+# Get the Elastic Compliance Matrix
+	if (/Elastic Compliance Matrix:/) {
+	    $compl_flag = 3;
+	}
+	
+	if ((/-{79}/) and ($compl_flag > 0)) {
+	    $compl_flag --;
+	    next;
+	}
+	
+	if ($compl_flag == 1) {
+	    my @line = split;
+	    shift @line;
+	    push (@s, @line); # @s is the matrix 11,12,13..16..21,22,23..65,66
+	}
+	
+    }
+    close GULPOUT;
+    
+    print "Full elastic complience matrix:\n";
+    foreach (@s) {
+	print "$_ ";
+    }
+
+#
+# calculate components of reduced elactic complience matrix 
+#
+
+    my $S_44 = $s[21] - (($s[15]*$s[15])/$s[14]); # S44 = s44-(s34s34/s33) I hope - ref steeds pg 5
+    my $S_55 = $s[28] - (($s[16]*$s[16])/$s[14]); # S55 = s55-(s35s35/s33)
+    
+    print "\nReduced elastic compliences: S44 = $S_44, S55 = $S_55\n";
+    
+    if ($S_44 == $S_55) {
+	die "This reduces to an isotropic solution ... so use isotropic insted!\n";
+    }
+    
+    if (($S_44 == 0) or ($S_55 == 0)) {
+	die "Reduced complience matrix has zero in 44 or 55!\n";
+    }
+
+    return ($S_44, $S_55);
+}

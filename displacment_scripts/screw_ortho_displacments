@@ -1,0 +1,207 @@
+#! /usr/bin/perl -w
+
+#
+#    Copyright 2010 Andrew Walker
+#
+#    This file is part of the Dislocator package.
+#
+#    The Dislocator package is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    The Dislocator package is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with the Dislocator package.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+
+use Math::Trig;
+
+# read in filename for elastic info, burgurs vector 
+#                    cell input name, cell output name
+
+my ($elast_file, $burg_vec, $cell_input, $cell_output) = @ARGV;
+my $num =  '[-+]?\d+\.?\d*'; # Matches any number, fp or dec
+print "Running dislocator (anisotropic)....\n";
+print "Paramiters are:\n";
+print "gout file for elastic params: $elast_file\n";
+print "burgers vector length: $burg_vec\n";
+print "cell file w/o dislocation: $cell_input\n";
+print "cell file with dislocation: $cell_output\n"; 
+print "============================================================\n";
+print "Geting elastic constants\n";
+my ($s44, $s55) = &get_elastic ($elast_file);
+print "done, $s44, $s55\n";
+print "opening files for IO\n";
+
+my $pfrac = 0; #NB set to 0 for cart input!
+my $a_param = 6.031250; # the a cell paramiter...
+
+
+open INPUT, "<$cell_input"
+    or die "Could not open input file $cell_input : $!";
+open OUTPUT, ">$cell_output"
+    or die "Could not open output file $cell_output : $!";
+my $number_of_atoms = 0;
+while (<INPUT>) {
+    chomp $_;
+
+    if  # if statment to match atom data.
+	(/^                                      ###################
+	                                        #Patern to match: #
+	 (\w+\s+core|\w+\s+shel|\w+\s+bshe|\w\d)\s+                        #Atom name        #
+	 ($num)\s+($num)\s+($num)\s+($num)\s+   #Coord and charge #
+	 ($num[\s+\d\s+\d\s+\d]?)               #occup and ?flags #
+	                                        ###################
+	 /xo) 
+    {  # Found an atom - store its details and bung a marker in $_ 
+	
+	my $atom_name = $1;
+	my $cart_x = $2; # NOTE will fall down for res files
+                      # as they use frac cart cart...
+	my $cart_y = $3;
+	my $cart_z = $4;
+	my $atom_chrg = $5;
+	my $atom_flag = $6;
+
+	$number_of_atoms ++;
+	if ($pfrac == 1) {
+	    $cart_x *= $a_param;
+	}
+
+# Move the atom # note rotation of axies
+
+	$cart_x = &anisotropic_1 ($cart_y, $cart_z, $cart_x,
+				  $s44, $s55, $burg_vec);
+
+	if ($pfrac == 1) {
+	    $cart_x /= $a_param;
+	}
+# redefine $_ 
+	$_ =  "$atom_name $cart_x $cart_y $cart_z $atom_chrg $atom_flag";
+    }
+
+    print OUTPUT "$_\n";
+}
+
+
+close INPUT;
+close OUTPUT;
+print "Finished - done $number_of_atoms atoms\n";
+
+sub anisotropic_1 {
+# based on eq 3.13 from Steeds book. puts a screw dislocation into
+# material along z (NB must then rotate xyz so it is allong x!)
+    my ($x, $y, $z, $S_44, $S_55, $burg) = @_;
+    print "sub anisotropic_1 called, paramiters are:\n";
+    print "$x, $y, $z, $S_44, $S_55\n";
+
+ #   my $z = pop(@_);
+  #  my $y = pop(@_);
+  #  my $x = pop(@_);
+
+    # calculate angle around z from x.
+    # (such that theta runs from 0 to 2pi
+    # not -pi to pi twice!)
+# $S_44 = $S_55; # THIS LINE FORCES ISOTROPIC LIMIT
+# print "isotropic!!\n"; # THIS TELLS YOU 
+
+    my $angle = 0;
+    if ($x == 0.0) {
+	$x = 0.00000000000000000000000000000000000000000000001;
+    }
+    if (($y >= 0) and ($x > 0)) {
+	$angle = atan (($y/$x) *
+		       sqrt ($S_44/$S_55)) ;
+    } elsif (($y >= 0) and ($x < 0)) {
+	$angle = atan (($y/$x) *
+		       sqrt ($S_44/$S_55)) + pi;
+    } elsif (($y < 0) and ($x < 0)) {
+	$angle = atan (($y/$x) * 
+		       sqrt ($S_44/$S_55)) + pi;
+    } elsif (($y < 0) and ($x > 0)) {
+	$angle = atan (($y/$x) *
+		       sqrt ($S_44/$S_55)) + 2*pi;
+    } else {
+	die "error in angle calc (sub anisotropic_1)!\n";
+    }
+    print "theta = $angle rads\n";
+
+    # work out displacments
+    $z += $burg * ($angle/(2*pi)); # the isotropic limit...
+# well not really
+
+ #   $z += ($burg/(2*pi)) * atan  (sqrt (($S_44/$S_55)) * (tan ($angle)));
+# NB I think atan returns a value between +- half pi
+
+    print "new position of atom is:\n";
+    print "$x, $y, $z\n";
+    print "-----------------------------------------------\n";
+    return $z;
+}
+
+sub get_elastic {
+
+#
+# this subroutine is intended to extract the elastic constas
+# from a gulp output file
+#
+
+    my $filename = $_[0];
+    print "Atempting to read elastic complience matrix from $filename\n";
+    my $compl_flag = 0;
+    my @s;
+
+    open GULPOUT, "<$filename" 
+	or die "could not open $filename : $!\n";
+
+    while (<GULPOUT>) {
+	
+# Get the Elastic Compliance Matrix
+	if (/Elastic Compliance Matrix:/) {
+	    $compl_flag = 3;
+	}
+	
+	if ((/-{79}/) and ($compl_flag > 0)) {
+	    $compl_flag --;
+	    next;
+	}
+	
+	if ($compl_flag == 1) {
+	    my @line = split;
+	    shift @line;
+	    push (@s, @line); # @s is the matrix 11,12,13..16..21,22,23..65,66
+	}
+	
+    }
+    close GULPOUT;
+    
+    print "Full elastic complience matrix:\n";
+    foreach (@s) {
+	print "$_ ";
+    }
+
+#
+# calculate components of reduced elactic complience matrix 
+#
+
+    my $S_44 = $s[21] - (($s[15]*$s[15])/$s[14]); # S44 = s44-(s34s34/s33) I hope - ref steeds pg 5
+    my $S_55 = $s[28] - (($s[16]*$s[16])/$s[14]); # S55 = s55-(s35s35/s33)
+    
+    print "\nReduced elastic compliences: S44 = $S_44, S55 = $S_55\n";
+    
+    if ($S_44 == $S_55) {
+print "This reduces to an isotropic solution ... so use isotropic insted!\n";
+    }
+    
+    if (($S_44 == 0) or ($S_55 == 0)) {
+	die "Reduced complience matrix has zero in 44 or 55!\n";
+    }
+
+    return ($S_44, $S_55);
+}

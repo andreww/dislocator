@@ -1,0 +1,77 @@
+#! /usr/bin/perl -w
+
+#
+#    Copyright 2010 Andrew Walker
+#
+#    This file is part of the Dislocator package.
+#
+#    The Dislocator package is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    The Dislocator package is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with the Dislocator package.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+
+##################################################################
+#                                                                #
+# "addflags" - adds optimisation flags to a dislocation          #
+#              input file.                                       #
+#                                                                #
+#      USEAGE:                                                   #
+#              # addflags < noflags.gin > withflags.gin          #
+#                                                                #
+#                                      Andrew Walker (c) 2003    #
+#                                                                #
+##################################################################  
+
+
+
+
+
+
+
+
+
+
+my $region = 0;
+my $num =  '[-+]?\d+\.?\d*'; # Matches any number, fp or dec
+while (<STDIN>) {
+
+    if ((/Cartesian\s+region\s+1/i) 
+       or (/pfractional\s+region\s+1/i)) {
+	$region = 1;
+    } elsif ((/Cartesian\s+region\s+2/i) 
+       or (/pfractional\s+region\s+2/i)) {
+	$region = 2;
+    } elsif ($region > 0) {
+	if  # if statment to match atom data.
+	    (/                                      #####################
+	                                             #Patern to match:   #
+	     (\w+\s+\w+\s+                          #Atom name - for PARA         #
+	      $num\s+$num\s+$num\s+$num\s+           #Coord and charge   #
+	      $num)                                  #occup and no flags #
+	                                             #####################
+	     /xo) 
+	{  # Found an atom - store its details and bung a marker in $_ 
+	    
+	    my $line = $1;
+	    if ($region == 1) { 
+		$_ =  $line . " 1 1 1\n";
+	    } elsif ($region == 2) {
+		$_ =  $line . " 0 0 0\n";
+	    } else {
+		die "Unexpected error 1!\n";
+	    }
+	}
+    }
+
+    print "$_";
+}

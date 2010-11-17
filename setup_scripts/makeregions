@@ -1,0 +1,130 @@
+#! /usr/bin/perl -w
+
+#
+#    Copyright 2010 Andrew Walker
+#
+#    This file is part of the Dislocator package.
+#
+#    The Dislocator package is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    The Dislocator package is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#    GNU General Public License for more details.
+#
+#    You should have received a copy of the GNU General Public License
+#    along with the Dislocator package.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+
+##################################################################
+#                                                                #
+# "makeregions" - seperates atoms into two regions based         #
+#                 on radius.                                     # 
+#                                                                #
+#      USEAGE:                                                   #
+#              # makeregions rad_r1 input.gin output.gin         #
+#                                                                #
+#                                      Andrew Walker (c) 2003    #
+#                                                                #
+#      UPDATED 20 - 1 - 03                                       #
+#              15 - 4 - 03                                       #
+#                                                                #
+##################################################################  
+
+
+
+
+
+# Read arguments
+
+my $reg_1 = $ARGV[0];
+my $inputfile = $ARGV[1];
+my $outputfile = $ARGV[2];
+
+my $num = '[-+]?\d+\.?\d*'; # Matches any number, fp or dec
+my $num_at = 0;
+
+open INPUT, "< $inputfile"
+    or die "could not open $inputfile: $!";
+
+print "Regions: $inputfile open for input\n";
+while (<INPUT>) {
+    
+    if  # if statment to match atom data.
+	(/                                      ###################
+	                                        #Patern to match: MASSHED FOR PARA#
+	 (\w+\s+core|\w+\s+shel)\s+                        #Atom name        #
+	 ($num)\s+($num)\s+($num)\s+($num)\s+   #Coord and charge #
+	 ($num[\s+\d\s+\d\s+\d]?)               #occup and ?flags #
+	                                        ###################
+	/xo) 
+    {  # Found an atom - store its details and bung a marker in $_ 
+	
+	$atom_name[$num_at] = $1;
+	$cart_x[$num_at] = $2; # NOTE will fall down for res files
+                               # as they use frac cart cart...
+	$cart_y[$num_at] = $3;
+	$cart_z[$num_at] = $4;
+	$atom_chrg[$num_at] = $5;
+	$atom_flag[$num_at] = $6;
+	$_ = "#<<An atom wos ear>>#";	
+	$num_at ++;
+    } elsif (/cartesian/i) {
+	$_ = "#<<New atoms go ear>>#";
+    }
+    
+    push @lines, $_;
+    
+}
+
+close INPUT;
+print "Regions: input read, $num_at atoms found\n";
+
+
+print "Regions: calculating r for all atoms...\n";
+my ($num1, $num2) = 0;
+foreach $at (0 .. ($num_at -1)){
+    my $rad = sqrt (($cart_y[$at]**2) + ($cart_z[$at]**2));
+    if ($rad > $reg_1) {
+	$num_2 ++;
+	push @reg_2,  "$atom_name[$at] $cart_x[$at] $cart_y[$at] $cart_z[$at] $atom_chrg[$at] $atom_flag[$at]";
+    } else {
+	$num_1 ++;
+	push @reg_1,  "$atom_name[$at] $cart_x[$at] $cart_y[$at] $cart_z[$at] $atom_chrg[$at] $atom_flag[$at]";
+    }
+}
+print "Regions: $num_1 atoms in region 1\n";
+print "Regions: $num_2 atoms in region 2\n";
+
+print "Regions: Dumping new gin file...\n";
+open OUTPUT, "> $outputfile"
+    or die "could not open $outputfile: $!";
+
+print "Regions: $outputfile open for output\n";
+select OUTPUT;
+
+
+foreach (@lines) {
+
+    if (/\#<<An atom wos ear>>\#/) {
+	next;
+    } elsif (/\#<<New atoms go ear>>\#/) {
+	print "Cartesian region 1\n";
+	foreach $line (@reg_1) {print $line}
+	print "Cartesian region 2\n";
+	foreach $line (@reg_2) {print $line}
+	next;
+    }
+    print $_;       
+}
+
+
+select STDOUT;
+close OUTPUT;
+print "Regions: output finished\n";
+print "Regions: Exiting\n";
+exit(0);

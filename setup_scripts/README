@@ -1,0 +1,4 @@
+These perl scripts help with the initial steps 
+of seting up a dislocation model: that is, converting
+a 3D periodic model of a crystal into a 1D model. This
+can then be used as input to the displacments code. 
